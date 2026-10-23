@@ -18,6 +18,14 @@ export const CAPTION_STYLE = {
   bg: 'rgba(0,0,0,0.55)', x: 0.5, y: 0.85, animation: 'none', isCaption: true, font: 'Cairo',
 };
 
+export const STICKERS = [
+  { name: 'وجوه', items: ['😀', '😂', '🥹', '😍', '😎', '🤩', '😮', '😢', '😡', '🤔', '🥳', '😴', '🤯', '🫡', '🤫', '😇'] },
+  { name: 'رموز', items: ['❤️', '🔥', '⭐', '✨', '💯', '✅', '❌', '⚡', '💥', '🎉', '👏', '👍', '👎', '🙏', '💪', '👀'] },
+  { name: 'أسهم وإشارات', items: ['⬅️', '➡️', '⬆️', '⬇️', '↗️', '🔄', '📍', '🔔', '📢', '❓', '❗', '⚠️', '🆕', '🔝', '🎯', '💬'] },
+  { name: 'مناسبات', items: ['🌙', '🕌', '🏮', '🎁', '🎂', '🎈', '🎊', '🪔', '🌟', '💐', '🕋', '📿', '☕', '🍰', '🎆', '🎇'] },
+  { name: 'متنوع', items: ['🎬', '🎥', '📸', '🎵', '🎧', '🎮', '⚽', '🚗', '✈️', '🌍', '☀️', '🌈', '🌊', '🌸', '🍕', '💡'] },
+];
+
 export function fontCss(t, px) {
   return `${t.weight || 700} ${px}px "${t.font || 'Cairo'}"`;
 }
@@ -42,52 +50,72 @@ function wrap(ctx, text, maxWidth) {
   return lines;
 }
 
-// Draws one text clip onto a canvas of size w×h. Font size is defined for a 1080px short side.
-// Used for both the live preview and the exported PNG overlays, so they match.
-export function drawText(ctx, t, w, h, alpha = 1) {
+// Lays out a text clip for a frame of size w×h. Font size is defined for a 1080px short side.
+function layout(ctx, t, w, h) {
   const px = t.size * (Math.min(w, h) / 1080);
-  ctx.save();
-  ctx.globalAlpha = alpha;
   ctx.font = fontCss(t, px);
+  const lines = wrap(ctx, t.text, w * 0.9);
+  const lh = px * 1.35;
+  const textW = Math.max(1, ...lines.map((l) => ctx.measureText(l).width));
+  const pad = t.bg ? px * 0.35 : 0;
+  const stroke = t.stroke && t.strokeWidth ? t.strokeWidth * (px / 60) * 2 : 0;
+  const boxW = textW + pad * 2 + stroke, boxH = lines.length * lh + pad * 0.8 + stroke;
+  return { px, lines, lh, pad, boxW, boxH };
+}
+
+// Draws the text block centred on (cx, cy) in the current transform.
+function drawBlock(ctx, t, L) {
+  ctx.font = fontCss(t, L.px);
   ctx.direction = 'rtl';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const lines = wrap(ctx, t.text, w * 0.9);
-  const lh = px * 1.35;
-  const cx = t.x * w;
-  const top = t.y * h - (lines.length * lh) / 2;
-  let box = null;
   if (t.bg) {
-    const maxW = Math.max(...lines.map((l) => ctx.measureText(l).width));
-    const pad = px * 0.35;
-    box = { x: cx - maxW / 2 - pad, y: top - pad * 0.4, w: maxW + pad * 2, h: lines.length * lh + pad * 0.8 };
+    const bw = L.boxW, bh = L.lines.length * L.lh + L.pad * 0.8;
     ctx.fillStyle = t.bg;
-    const r = Math.min(px * 0.3, box.h / 2);
+    const r = Math.min(L.px * 0.3, bh / 2);
     ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(box.x, box.y, box.w, box.h, r); else ctx.rect(box.x, box.y, box.w, box.h);
+    if (ctx.roundRect) ctx.roundRect(-bw / 2, -bh / 2, bw, bh, r); else ctx.rect(-bw / 2, -bh / 2, bw, bh);
     ctx.fill();
   }
-  lines.forEach((line, i) => {
-    const y = top + lh * (i + 0.5);
+  const top = -(L.lines.length * L.lh) / 2;
+  L.lines.forEach((line, i) => {
+    const y = top + L.lh * (i + 0.5);
     if (t.stroke && t.strokeWidth) {
       ctx.lineJoin = 'round';
-      ctx.lineWidth = t.strokeWidth * (px / 60) * 2;
+      ctx.lineWidth = t.strokeWidth * (L.px / 60) * 2;
       ctx.strokeStyle = t.stroke;
-      ctx.strokeText(line, cx, y);
+      ctx.strokeText(line, 0, y);
     }
     ctx.fillStyle = t.color;
-    ctx.fillText(line, cx, y);
+    ctx.fillText(line, 0, y);
   });
-  ctx.restore();
-  const maxW = Math.max(...lines.map((l) => { ctx.font = fontCss(t, px); return ctx.measureText(l).width; }));
-  return box || { x: cx - maxW / 2, y: top, w: maxW, h: lines.length * lh };
 }
 
-export function renderTextPng(t, w, h) {
+// Preview drawing on a w×h canvas with the clip's (possibly animated) transform `tr`.
+// Returns the unrotated bounding box in canvas pixels, for hit testing.
+export function drawText(ctx, t, w, h, tr, alpha = 1) {
+  ctx.save();
+  const L = layout(ctx, t, w, h);
+  const cx = tr.x * w, cy = tr.y * h;
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha * tr.opacity));
+  ctx.translate(cx, cy);
+  ctx.rotate((tr.rotation * Math.PI) / 180);
+  ctx.scale(tr.scale, tr.scale);
+  drawBlock(ctx, t, L);
+  ctx.restore();
+  const bw = L.boxW * tr.scale, bh = L.boxH * tr.scale;
+  return { x: cx - bw / 2, y: cy - bh / 2, w: bw, h: bh };
+}
+
+// Export: renders the text tightly at scale 1 for a W×H frame; FFmpeg positions, scales and rotates it.
+export function renderTextLayer(t, W, H) {
   const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  drawText(c.getContext('2d'), t, w, h);
-  return c.toDataURL('image/png');
+  const ctx = c.getContext('2d');
+  const L = layout(ctx, t, W, H);
+  c.width = Math.ceil(L.boxW + 8); c.height = Math.ceil(L.boxH + 8);
+  ctx.translate(c.width / 2, c.height / 2);
+  drawBlock(ctx, t, L);
+  return { png: c.toDataURL('image/png'), w: c.width, h: c.height };
 }
 
 export function textAlpha(t, time) {

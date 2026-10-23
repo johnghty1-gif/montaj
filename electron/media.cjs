@@ -47,6 +47,11 @@ async function probe(filePath) {
       await run(ffmpegPath, ['-y', '-ss', String(at), '-i', filePath, '-frames:v', '1', '-vf', 'scale=320:-2', thumb]);
     }
   }
+  // VP9 WebM keeps transparency in a side channel flagged by the ALPHA_MODE tag (our cutouts use it).
+  const tags = (v && v.tags) || {};
+  const hasAlpha = isImage
+    ? /a|pal/.test((v && v.pix_fmt) || '')
+    : !!v && v.codec_name === 'vp9' && Object.keys(tags).some((k) => k.toLowerCase() === 'alpha_mode' && tags[k] === '1');
   return {
     path: filePath,
     name: path.basename(filePath),
@@ -55,8 +60,14 @@ async function probe(filePath) {
     width: v ? v.width : 0,
     height: v ? v.height : 0,
     hasAudio: !!a,
+    hasAlpha,
     thumb,
   };
 }
 
-module.exports = { probe, run, ffmpegPath, ffprobePath, cacheDir };
+// Files the app generates (cutouts, stabilized clips, separated stems, speech) live here so projects can reference them.
+function derivedPath(prefix, ext) {
+  return path.join(cacheDir('derived'), `${prefix}-${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}.${ext}`);
+}
+
+module.exports = { probe, run, ffmpegPath, ffprobePath, cacheDir, derivedPath };

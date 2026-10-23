@@ -25,8 +25,12 @@ export default function CaptionsDialog({ project, mediaById, onClose, onDone }) 
         segments.push({ path: m.path, in: l.clip.in, out: l.clip.out, speed: l.clip.speed, timelineStart: l.start });
       }
     }
-    for (const a of project.audio) {
-      segments.push({ path: mediaById[a.mediaId].path, in: a.in, out: a.out, speed: 1, timelineStart: a.start });
+    for (const key of ['layers', 'audio']) {
+      for (const c of project[key]) {
+        const m = mediaById[c.mediaId];
+        if (c.muted || !(m.type === 'audio' || (m.type === 'video' && m.hasAudio))) continue;
+        segments.push({ path: m.path, in: c.in, out: c.out, speed: c.speed || 1, timelineStart: c.start });
+      }
     }
     if (!segments.length) { setState({ phase: 'error', message: 'لا يوجد صوت في المشروع لتفريغه.' }); return; }
     setState({ phase: 'running', stage: 'download', progress: 0 });

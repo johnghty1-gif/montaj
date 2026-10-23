@@ -7,18 +7,42 @@ export const ASPECTS = {
   '4:5': { label: 'عمودي 4:5', w: 1080, h: 1350 },
 };
 
+// Track keys in the project. `main` is magnetic; the others hold freely positioned clips.
+export const TRACKS = ['text', 'layers', 'main', 'audio'];
+
 export function emptyProject() {
   return {
-    version: 1,
+    version: 2,
     settings: { aspect: '16:9', fps: 30 },
     media: [],
     main: [],
+    layers: [],
     audio: [],
     text: [],
   };
 }
 
-export const clipDuration = (c) => (c.out - c.in) / c.speed;
+const AUDIO_DEFAULTS = { volume: 1, muted: false, fadeIn: 0, fadeOut: 0, audioFx: 'none', speed: 1 };
+const LOOK_DEFAULTS = { filter: 'none', adjust: { brightness: 0, contrast: 1, saturation: 1 } };
+const TRANSFORM_DEFAULTS = { x: 0.5, y: 0.5, scale: 1, rotation: 0, opacity: 1, kf: {} };
+
+// Fills fields added in later versions so older .montaj files keep working.
+export function migrate(p) {
+  const base = { ...emptyProject(), ...p, settings: { ...emptyProject().settings, ...(p.settings || {}) } };
+  return {
+    ...base,
+    version: 2,
+    main: base.main.map((c) => ({ ...AUDIO_DEFAULTS, ...LOOK_DEFAULTS, transition: { type: 'none', duration: 0.5 }, ...c })),
+    layers: base.layers.map((c) => ({ ...AUDIO_DEFAULTS, ...LOOK_DEFAULTS, ...TRANSFORM_DEFAULTS, scale: 0.5, ...c })),
+    audio: base.audio.map((c) => ({ ...AUDIO_DEFAULTS, ...c })),
+    text: base.text.map((c) => ({ kind: 'text', ...TRANSFORM_DEFAULTS, ...c })),
+  };
+}
+
+export const clipDuration = (c) => (c.out - c.in) / (c.speed || 1);
+
+// Timeline duration of any clip on any track.
+export const spanOf = (kind, c) => (kind === 'text' ? c.duration : clipDuration(c));
 
 export function transitionLen(project, i) {
   const a = project.main[i], b = project.main[i + 1];
@@ -37,37 +61,55 @@ export function mainLayout(project) {
   });
 }
 
-export function totalDuration(project) {
-  const lay = mainLayout(project);
-  const mainEnd = lay.length ? lay[lay.length - 1].end : 0;
-  const ends = [mainEnd, ...project.audio.map((a) => a.start + (a.out - a.in)), ...project.text.map((t) => t.start + t.duration)];
-  return Math.max(0, ...ends);
-}
-
 export function mainEnd(project) {
   const lay = mainLayout(project);
   return lay.length ? lay[lay.length - 1].end : 0;
 }
 
+export function totalDuration(project) {
+  const ends = [mainEnd(project)];
+  for (const k of ['layers', 'audio', 'text']) for (const c of project[k]) ends.push(c.start + spanOf(k, c));
+  return Math.max(0, ...ends);
+}
+
+// Where a clip sits on the timeline, for any track.
+export function clipStart(project, kind, id) {
+  if (kind === 'main') return mainLayout(project).find((l) => l.clip.id === id)?.start ?? 0;
+  return project[kind].find((c) => c.id === id)?.start ?? 0;
+}
+
 export function newMainClip(m) {
   return {
-    id: uid(), mediaId: m.id, in: 0, out: m.duration, speed: 1, volume: 1, muted: false,
-    filter: 'none', adjust: { brightness: 0, contrast: 1, saturation: 1 },
-    transition: { type: 'none', duration: 0.5 },
+    id: uid(), mediaId: m.id, in: 0, out: m.duration, ...AUDIO_DEFAULTS, ...LOOK_DEFAULTS,
+    adjust: { ...LOOK_DEFAULTS.adjust }, transition: { type: 'none', duration: 0.5 },
   };
 }
 
-export function newAudioClip(m, start) {
-  return { id: uid(), mediaId: m.id, start, in: 0, out: m.duration, volume: 1 };
+export function newLayerClip(m, start) {
+  return {
+    id: uid(), mediaId: m.id, start, in: 0, out: m.duration, ...AUDIO_DEFAULTS, ...LOOK_DEFAULTS,
+    adjust: { ...LOOK_DEFAULTS.adjust }, ...TRANSFORM_DEFAULTS, kf: {}, scale: 0.5, x: 0.7, y: 0.3,
+  };
+}
+
+export function newAudioClip(m, start, extra = {}) {
+  return { id: uid(), mediaId: m.id, start, in: 0, out: m.duration, ...AUDIO_DEFAULTS, ...extra };
 }
 
 export function newTextClip(start, preset = {}) {
   return {
-    id: uid(), start, duration: 3, text: 'اكتب نصك هنا',
+    id: uid(), kind: 'text', start, duration: 3, text: 'اكتب نصك هنا',
     font: 'Cairo', size: 72, weight: 700, color: '#ffffff', stroke: '#000000', strokeWidth: 4,
-    bg: '', x: 0.5, y: 0.5, animation: 'fade', isCaption: false,
+    bg: '', animation: 'fade', isCaption: false, ...TRANSFORM_DEFAULTS, kf: {},
     ...preset,
   };
+}
+
+export function newSticker(start, emoji) {
+  return newTextClip(start, {
+    kind: 'sticker', text: emoji, font: 'Segoe UI Emoji', size: 220, weight: 400, stroke: '', strokeWidth: 0,
+    bg: '', animation: 'none', x: 0.5, y: 0.5,
+  });
 }
 
 // ---------- undo / redo ----------
@@ -94,7 +136,7 @@ export function historyReducer(state, action) {
       if (!state.future.length) return state;
       return { past: [...state.past, state.present], present: state.future[0], future: state.future.slice(1), dirty: true };
     case 'load':
-      return historyInit(action.project);
+      return historyInit(migrate(action.project));
     case 'saved':
       return { ...state, dirty: false };
     default:

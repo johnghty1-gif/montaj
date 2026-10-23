@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { mainLayout, transitionLen } from '../lib/project.js';
+import { mainLayout, transitionLen, spanOf } from '../lib/project.js';
+import { keyframeTimes } from '../lib/anim.js';
 import { fmt, clamp } from '../lib/time.js';
 
 const ROW = 46;
@@ -21,15 +22,24 @@ function tickStep(zoom) {
   return [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300].find((s) => s * zoom >= 70) || 600;
 }
 
+const FREE_TRACKS = [
+  { key: 'text', label: 'النصوص' },
+  { key: 'layers', label: 'الطبقات' },
+];
+
 export default function Timeline({ project, mediaById, time, zoom, selection, onSelect, onSeek, update, dispatch, onDropMedia, total }) {
   const scrollRef = useRef(null);
   const contentRef = useRef(null);
+  const labelsRef = useRef(null);
   const [dropIndex, setDropIndex] = useState(null);
   const layout = useMemo(() => mainLayout(project), [project]);
   const width = (Math.max(total, 30) + 10) * zoom;
 
-  const textLanes = useMemo(() => lanes(project.text, (t) => t.start, (t) => t.start + t.duration), [project.text]);
-  const audioLanes = useMemo(() => lanes(project.audio, (a) => a.start, (a) => a.start + a.out - a.in), [project.audio]);
+  const laneInfo = useMemo(() => {
+    const out = {};
+    for (const k of ['text', 'layers', 'audio']) out[k] = lanes(project[k], (c) => c.start, (c) => c.start + spanOf(k, c));
+    return out;
+  }, [project.text, project.layers, project.audio]);
 
   // Keep the playhead in view while playing.
   useEffect(() => {
@@ -92,37 +102,38 @@ export default function Timeline({ project, mediaById, time, zoom, selection, on
       });
   };
 
+  const maxOut = (m) => (m.type === 'image' ? 3600 : m.duration);
+
   const trimMain = (e, item, side) => {
     const c0 = item.clip;
     const m = mediaById[c0.mediaId];
-    const maxOut = m.type === 'image' ? 3600 : m.duration;
     onSelect({ kind: 'main', id: c0.id });
     drag(e, (dx) => setList('main', c0.id, (c) => (side === 'start'
       ? { ...c, in: clamp(c0.in + dx * c0.speed, 0, c0.out - 0.1) }
-      : { ...c, out: clamp(c0.out + dx * c0.speed, c0.in + 0.1, maxOut) })));
+      : { ...c, out: clamp(c0.out + dx * c0.speed, c0.in + 0.1, maxOut(m)) })));
   };
 
-  // ---------- audio + text ----------
+  // ---------- free tracks (text, layers, audio) ----------
   const moveFree = (e, key, c0) => {
     drag(e, (dx) => setList(key, c0.id, (c) => ({ ...c, start: Math.max(0, c0.start + dx) })), () => onSelect({ kind: key, id: c0.id }));
   };
 
-  const trimAudio = (e, c0, side) => {
+  const trimFree = (e, key, c0, side) => {
+    onSelect({ kind: key, id: c0.id });
+    if (key === 'text') {
+      drag(e, (dx) => setList('text', c0.id, (c) => {
+        if (side === 'end') return { ...c, duration: Math.max(0.1, c0.duration + dx) };
+        const d = clamp(dx, -c0.start, c0.duration - 0.1);
+        return { ...c, start: c0.start + d, duration: c0.duration - d };
+      }));
+      return;
+    }
     const m = mediaById[c0.mediaId];
-    onSelect({ kind: 'audio', id: c0.id });
-    drag(e, (dx) => setList('audio', c0.id, (c) => {
-      if (side === 'end') return { ...c, out: clamp(c0.out + dx, c0.in + 0.1, m.duration) };
-      const d = clamp(dx, Math.max(-c0.in, -c0.start), c0.out - c0.in - 0.1);
-      return { ...c, start: c0.start + d, in: c0.in + d };
-    }));
-  };
-
-  const trimText = (e, c0, side) => {
-    onSelect({ kind: 'text', id: c0.id });
-    drag(e, (dx) => setList('text', c0.id, (c) => {
-      if (side === 'end') return { ...c, duration: Math.max(0.1, c0.duration + dx) };
-      const d = clamp(dx, -c0.start, c0.duration - 0.1);
-      return { ...c, start: c0.start + d, duration: c0.duration - d };
+    const sp = c0.speed || 1;
+    drag(e, (dx) => setList(key, c0.id, (c) => {
+      if (side === 'end') return { ...c, out: clamp(c0.out + dx * sp, c0.in + 0.1, maxOut(m)) };
+      const d = clamp(dx, Math.max(-c0.in / sp, -c0.start), (c0.out - c0.in - 0.1) / sp);
+      return { ...c, start: c0.start + d, in: c0.in + d * sp };
     }));
   };
 
@@ -141,7 +152,8 @@ export default function Timeline({ project, mediaById, time, zoom, selection, on
     const m = mediaById[e.dataTransfer.getData('application/x-media')];
     if (!m) return;
     const t = timeAt(e.clientX);
-    if (m.type === 'audio') onDropMedia(m, { start: track === 'audio' ? t : t });
+    if (track === 'layers' && m.type !== 'audio') onDropMedia(m, { as: 'layer', start: t });
+    else if (m.type === 'audio') onDropMedia(m, { start: t });
     else onDropMedia(m, { index: insertIndexAt(t) });
   };
   const onDragOver = (e, track) => {
@@ -156,16 +168,46 @@ export default function Timeline({ project, mediaById, time, zoom, selection, on
 
   const isSel = (kind, id) => selection && selection.kind === kind && selection.id === id;
   const dropX = dropIndex == null ? null : dropIndex < layout.length ? layout[dropIndex].start * zoom : (layout.length ? layout[layout.length - 1].end : 0) * zoom;
+  const deselect = (e) => { if (e.target === e.currentTarget) onSelect(null); };
+
+  const diamonds = (c) => keyframeTimes(c).map((t) => (
+    <span key={t} className="kf-dot" style={{ left: t * zoom - 4 }} title="إطار مفتاحي" />
+  ));
+
+  const freeClip = (key, c) => {
+    const m = c.mediaId && mediaById[c.mediaId];
+    if (key !== 'text' && !m) return null;
+    const span = spanOf(key, c);
+    const cls = key === 'text' ? (c.kind === 'sticker' ? 'sticker-clip' : c.isCaption ? 'text-clip caption' : 'text-clip')
+      : key === 'layers' ? 'layer-clip' : 'audio-clip';
+    const label = key === 'text' ? c.text
+      : key === 'layers' ? `▣ ${m.name}` : `${c.muted ? '🔇' : '♪'} ${m.name}`;
+    return (
+      <div
+        key={c.id} className={`clip ${cls}` + (isSel(key, c.id) ? ' sel' : '')}
+        style={{
+          left: c.start * zoom, width: Math.max(4, span * zoom), top: laneInfo[key].map[c.id] * ROW + 4,
+          backgroundImage: key === 'layers' && m.thumb ? `url("${window.api.mediaUrl(m.thumb)}")` : undefined,
+        }}
+        onPointerDown={(e) => moveFree(e, key, c)}
+      >
+        <span className="handle h-start" onPointerDown={(e) => trimFree(e, key, c, 'start')} />
+        <span className="clip-label" dir="rtl">{(c.speed || 1) !== 1 && <b>{c.speed}x </b>}{label}</span>
+        <span className="handle h-end" onPointerDown={(e) => trimFree(e, key, c, 'end')} />
+        {key !== 'audio' && diamonds(c)}
+      </div>
+    );
+  };
 
   return (
     <div className="timeline" dir="ltr">
-      <div className="tl-labels">
+      <div className="tl-labels" ref={labelsRef}>
         <div className="lbl ruler-lbl" />
-        <div className="lbl" style={{ height: textLanes.count * ROW }}>النصوص</div>
+        {FREE_TRACKS.map((t) => <div key={t.key} className="lbl" style={{ height: laneInfo[t.key].count * ROW }}>{t.label}</div>)}
         <div className="lbl main-lbl" style={{ height: ROW + 14 }}>الفيديو</div>
-        <div className="lbl" style={{ height: audioLanes.count * ROW }}>الصوت</div>
+        <div className="lbl" style={{ height: laneInfo.audio.count * ROW }}>الصوت</div>
       </div>
-      <div className="tl-scroll" ref={scrollRef}>
+      <div className="tl-scroll" ref={scrollRef} onScroll={(e) => { if (labelsRef.current) labelsRef.current.scrollTop = e.currentTarget.scrollTop; }}>
         <div className="tl-content" ref={contentRef} style={{ width }}>
           <div className="ruler" onPointerDown={rulerDown}>
             {ticks.map((t) => (
@@ -173,24 +215,20 @@ export default function Timeline({ project, mediaById, time, zoom, selection, on
             ))}
           </div>
 
-          <div className="track text-track" style={{ height: textLanes.count * ROW }} onPointerDown={(e) => { if (e.target === e.currentTarget) onSelect(null); }}>
-            {project.text.map((t) => (
-              <div
-                key={t.id} className={'clip text-clip' + (t.isCaption ? ' caption' : '') + (isSel('text', t.id) ? ' sel' : '')}
-                style={{ left: t.start * zoom, width: Math.max(4, t.duration * zoom), top: textLanes.map[t.id] * ROW + 4 }}
-                onPointerDown={(e) => moveFree(e, 'text', t)}
-              >
-                <span className="handle h-start" onPointerDown={(e) => trimText(e, t, 'start')} />
-                <span className="clip-label" dir="rtl">{t.text}</span>
-                <span className="handle h-end" onPointerDown={(e) => trimText(e, t, 'end')} />
-              </div>
-            ))}
-          </div>
+          {FREE_TRACKS.map(({ key }) => (
+            <div
+              key={key} className={`track ${key}-track`} style={{ height: laneInfo[key].count * ROW }} onPointerDown={deselect}
+              onDragOver={(e) => onDragOver(e, key)} onDrop={(e) => onDrop(e, key)}
+            >
+              {key === 'layers' && !project.layers.length && <div className="track-hint" dir="rtl">اسحب صورة أو فيديو هنا لوضعه فوق الفيديو (صورة داخل صورة)</div>}
+              {project[key].map((c) => freeClip(key, c))}
+            </div>
+          ))}
 
           <div
             className="track main-track" style={{ height: ROW + 14 }}
             onDragOver={(e) => onDragOver(e, 'main')} onDragLeave={() => setDropIndex(null)} onDrop={(e) => onDrop(e, 'main')}
-            onPointerDown={(e) => { if (e.target === e.currentTarget) onSelect(null); }}
+            onPointerDown={deselect}
           >
             {!layout.length && <div className="track-hint" dir="rtl">اسحب الوسائط إلى هنا</div>}
             {layout.map((l) => {
@@ -231,25 +269,10 @@ export default function Timeline({ project, mediaById, time, zoom, selection, on
           </div>
 
           <div
-            className="track audio-track" style={{ height: audioLanes.count * ROW }}
-            onDragOver={(e) => onDragOver(e, 'audio')} onDrop={(e) => onDrop(e, 'audio')}
-            onPointerDown={(e) => { if (e.target === e.currentTarget) onSelect(null); }}
+            className="track audio-track" style={{ height: laneInfo.audio.count * ROW }}
+            onDragOver={(e) => onDragOver(e, 'audio')} onDrop={(e) => onDrop(e, 'audio')} onPointerDown={deselect}
           >
-            {project.audio.map((a) => {
-              const m = mediaById[a.mediaId];
-              if (!m) return null;
-              return (
-                <div
-                  key={a.id} className={'clip audio-clip' + (isSel('audio', a.id) ? ' sel' : '')}
-                  style={{ left: a.start * zoom, width: Math.max(4, (a.out - a.in) * zoom), top: audioLanes.map[a.id] * ROW + 4 }}
-                  onPointerDown={(e) => moveFree(e, 'audio', a)}
-                >
-                  <span className="handle h-start" onPointerDown={(e) => trimAudio(e, a, 'start')} />
-                  <span className="clip-label" dir="rtl">♪ {m.name}</span>
-                  <span className="handle h-end" onPointerDown={(e) => trimAudio(e, a, 'end')} />
-                </div>
-              );
-            })}
+            {project.audio.map((a) => freeClip('audio', a))}
           </div>
 
           <div className="playhead" style={{ left: time * zoom }} />

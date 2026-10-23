@@ -41,3 +41,20 @@ export const TRANSITIONS = [
 ];
 
 export const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+
+// Ids must match AUDIO_FX in electron/audiofx.cjs.
+export const AUDIO_FX = [
+  { id: 'none', name: 'بدون' },
+  { id: 'enhance', name: 'تحسين الصوت' },
+  { id: 'denoise', name: 'تقليل الضوضاء' },
+  { id: 'normalize', name: 'توحيد المستوى' },
+  { id: 'deep', name: 'صوت عميق' },
+  { id: 'chipmunk', name: 'صوت طفولي' },
+  { id: 'robot', name: 'روبوت' },
+  { id: 'echo', name: 'صدى' },
+  { id: 'hall', name: 'قاعة' },
+  { id: 'telephone', name: 'هاتف' },
+  { id: 'radio', name: 'راديو' },
+  { id: 'megaphone', name: 'مكبر صوت' },
+  { id: 'vibrato', name: 'اهتزاز' },
+];

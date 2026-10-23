@@ -1,7 +1,7 @@
 {
   "name": "montaj",
   "productName": "Montaj",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "محرر فيديو عربي لسطح المكتب",
   "author": "Montaj",
   "main": "electron/main.cjs",
@@ -22,8 +22,13 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "package.json"
+      "build/icon.png",
+      "package.json",
+      "!node_modules/onnxruntime-node/bin/napi-v*/linux/**",
+      "!node_modules/onnxruntime-node/bin/napi-v*/darwin/**",
+      "!node_modules/onnxruntime-node/bin/napi-v*/win32/arm64/**"
     ],
+    "afterPack": "scripts/after-pack.cjs",
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
       "node_modules/ffprobe-static/**",
@@ -34,12 +39,16 @@
       "target": [
         "nsis"
       ],
+      "icon": "build/icon.ico",
       "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "shortcutName": "Montaj - مونتاج"
+      "shortcutName": "Montaj - مونتاج",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
     },
     "publish": [
       {
@@ -67,6 +76,8 @@
     "cross-env": "^7.0.3",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
+    "png-to-ico": "^2.1.8",
+    "rcedit": "^4.0.1",
     "vite": "^5.4.21",
     "wait-on": "^8.0.5"
   }

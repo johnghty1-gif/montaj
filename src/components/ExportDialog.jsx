@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { ASPECTS, mainLayout, mainEnd } from '../lib/project.js';
-import { ensureFonts, renderTextPng } from '../lib/text.js';
+import { mainEnd } from '../lib/project.js';
+import { buildExportJob, exportSize } from '../lib/exportJob.js';
 import { fmt } from '../lib/time.js';
 
 const RES = [
@@ -15,8 +15,6 @@ const QUALITY = [
   { id: 'low', name: 'حجم صغير', crf: 28, preset: 'fast' },
 ];
 
-const even = (n) => Math.round(n / 2) * 2;
-
 export default function ExportDialog({ project, mediaById, onClose }) {
   const [res, setRes] = useState(1080);
   const [quality, setQuality] = useState('medium');
@@ -25,9 +23,7 @@ export default function ExportDialog({ project, mediaById, onClose }) {
 
   useEffect(() => window.api.onExportProgress((p) => setState((s) => (s.phase === 'running' ? { ...s, progress: p } : s))), []);
 
-  const a = ASPECTS[project.settings.aspect];
-  const scale = res / Math.min(a.w, a.h);
-  const W = even(a.w * scale), H = even(a.h * scale);
+  const { W, H } = exportSize(project, res);
   const duration = mainEnd(project);
 
   const start = async () => {
@@ -35,17 +31,9 @@ export default function ExportDialog({ project, mediaById, onClose }) {
     if (!outPath) return;
     setState({ phase: 'running', progress: 0 });
     try {
-      await ensureFonts(project.text);
       const q = QUALITY.find((x) => x.id === quality);
-      const clips = mainLayout(project).map(({ clip }) => {
-        const m = mediaById[clip.mediaId];
-        return { ...clip, path: m.path, type: m.type, hasAudio: m.hasAudio };
-      });
-      const overlays = project.text
-        .filter((t) => t.start < duration && t.text.trim())
-        .map((t) => ({ png: renderTextPng(t, W, H), start: t.start, end: Math.min(duration, t.start + t.duration), fade: t.animation === 'fade' }));
-      const audio = project.audio.map((x) => ({ ...x, path: mediaById[x.mediaId].path }));
-      const out = await window.api.startExport({ outPath, width: W, height: H, fps, crf: q.crf, preset: q.preset, clips, audio, overlays });
+      const job = await buildExportJob(project, mediaById, { outPath, res, fps, crf: q.crf, preset: q.preset });
+      const out = await window.api.startExport(job);
       setState({ phase: 'done', outPath: out });
     } catch (e) {
       setState({ phase: 'error', message: String(e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '') });

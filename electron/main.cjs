@@ -6,13 +6,17 @@ const media = require('./media.cjs');
 const exporter = require('./export.cjs');
 const captions = require('./captions.cjs');
 const updater = require('./updater.cjs');
+const jobs = require('./jobs.cjs');
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 let win = null;
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, bypassCSP: true } },
+  { scheme: 'media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, bypassCSP: true, corsEnabled: true } },
 ]);
+
+// CORS lets the renderer route media through Web Audio (volume above 100%, fades) without muting it.
+const CORS = { 'Access-Control-Allow-Origin': '*' };
 
 const MIME = {
   '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska',
@@ -35,18 +39,18 @@ function registerMediaProtocol() {
       let start = m && m[1] ? parseInt(m[1], 10) : 0;
       let end = m && m[2] ? parseInt(m[2], 10) : stat.size - 1;
       end = Math.min(end, stat.size - 1);
-      if (start > end) return new Response('', { status: 416, headers: { 'Content-Range': `bytes */${stat.size}` } });
+      if (start > end) return new Response('', { status: 416, headers: { ...CORS, 'Content-Range': `bytes */${stat.size}` } });
       const body = Readable.toWeb(fs.createReadStream(filePath, { start, end }));
       return new Response(body, {
         status: 206,
         headers: {
-          'Content-Type': type, 'Accept-Ranges': 'bytes',
+          ...CORS, 'Content-Type': type, 'Accept-Ranges': 'bytes',
           'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Content-Length': String(end - start + 1),
         },
       });
     }
     const body = Readable.toWeb(fs.createReadStream(filePath));
-    return new Response(body, { status: 200, headers: { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Content-Length': String(stat.size) } });
+    return new Response(body, { status: 200, headers: { ...CORS, 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Content-Length': String(stat.size) } });
   });
 }
 
@@ -102,7 +106,7 @@ function buildMenu() {
 function createWindow() {
   win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 1100, minHeight: 700,
-    backgroundColor: '#15161a', title: 'مونتاج',
+    backgroundColor: '#15161a', title: 'مونتاج', icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false },
   });
   if (isDev) win.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -128,6 +132,17 @@ function selfTest(dir) {
       const steps = JSON.parse(fs.readFileSync(path.join(dir, 'steps.json'), 'utf8'));
       await win.webContents.executeJavaScript(`window.__montajTest.load(${fs.readFileSync(projectFile, 'utf8')})`);
       for (const s of steps) {
+        if (s.job) {
+          let result;
+          try { result = await jobs.run(s.job.kind, s.job.args, () => {}); } catch (e) { result = { error: String(e.message || e) }; }
+          fs.appendFileSync(path.join(dir, 'job-results.txt'), `${s.job.kind}: ${JSON.stringify(result)}\n`);
+          continue;
+        }
+        if (s.export) {
+          try { await win.webContents.executeJavaScript(`window.__montajTest.exportTo(${JSON.stringify(s.export)})`); }
+          catch (e) { fs.writeFileSync(path.join(dir, 'export-error.txt'), String(e.message || e)); }
+          continue;
+        }
         await win.webContents.executeJavaScript(`window.__montajTest.seek(${s.time}); window.__montajTest.select(${JSON.stringify(s.select || null)})`);
         await wait(1500);
         await shot(s.name);
@@ -181,6 +196,19 @@ ipcMain.handle('export:cancel', () => exporter.cancel());
 ipcMain.handle('export:reveal', (_e, p) => shell.showItemInFolder(p));
 
 ipcMain.handle('captions:generate', async (_e, job) => captions.generate(job, (p) => send('captions:progress', p)));
+
+ipcMain.handle('dialog:importImage', async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: 'استيراد ملصق', properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'صور', extensions: ['png', 'webp', 'gif', 'jpg', 'jpeg'] }],
+  });
+  return r.canceled ? [] : r.filePaths;
+});
+
+// Long-running processing (background removal, stabilization, separation, TTS). One at a time.
+ipcMain.handle('job:run', async (_e, { kind, args }) => jobs.run(kind, args, (p) => send('job:progress', p)));
+ipcMain.handle('job:cancel', () => jobs.cancel());
+ipcMain.handle('tts:voices', () => jobs.listVoices());
 
 ipcMain.handle('updater:install', () => updater.installNow());
 
