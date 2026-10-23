@@ -1,0 +1,5 @@
+node_modules/
+dist/
+release/
+*.log
+CapCut_9.6.0_features.md
